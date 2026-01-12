@@ -38,43 +38,75 @@ export interface Team {
 }
 
 export interface Issue {
-  id: number;
-  title: string;
-  status: string;
-  level: string;
+  id: string;
+  project: number;
+  digest_order: number;
   first_seen: string;
   last_seen: string;
-  count: number;
-  project: number;
-  culprit?: string;
-  metadata?: Record<string, unknown>;
+  digested_event_count: number;
+  stored_event_count: number;
+  calculated_type: string;
+  calculated_value: string;
+  transaction: string;
+  is_resolved: boolean;
+  is_resolved_by_next_release: boolean;
+  is_muted: boolean;
+}
+
+export interface StackFrame {
+  filename: string;
+  function: string;
+  lineno?: number;
+  colno?: number;
+  in_app?: boolean;
+  context_line?: string;
+  pre_context?: string[];
+  post_context?: string[];
+}
+
+export interface ExceptionValue {
+  type: string;
+  value: string;
+  stacktrace?: {
+    frames: StackFrame[];
+  };
+}
+
+export interface EventData {
+  exception?: {
+    values?: ExceptionValue[];
+  };
+  message?: string;
+  level?: string;
+  platform?: string;
+  tags?: Record<string, string>;
+  contexts?: Record<string, unknown>;
+  request?: {
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+  };
+  browser?: {
+    name?: string;
+    version?: string;
+  };
+  os?: {
+    name?: string;
+    version?: string;
+  };
 }
 
 export interface Event {
   id: string;
-  issue: number;
+  event_id: string;
+  issue: string;
+  project: number;
   timestamp: string;
-  message: string;
-  level: string;
-  platform: string;
-  tags?: Record<string, string>;
-  contexts?: Record<string, unknown>;
-  exception?: {
-    values?: Array<{
-      type: string;
-      value: string;
-      stacktrace?: {
-        frames: Array<{
-          filename: string;
-          lineno: number;
-          function: string;
-          context_line?: string;
-          pre_context?: string[];
-          post_context?: string[];
-        }>;
-      };
-    }>;
-  };
+  ingested_at: string;
+  digested_at: string;
+  digest_order: number;
+  grouping: number;
+  data?: EventData;
 }
 
 export class BugsinkClient {
@@ -150,18 +182,18 @@ export class BugsinkClient {
   /**
    * Get a specific issue by ID
    */
-  async getIssue(issueId: number): Promise<Issue> {
+  async getIssue(issueId: string): Promise<Issue> {
     return this.fetch<Issue>(`/issues/${issueId}/`);
   }
 
   /**
    * List events for an issue
    */
-  async listEvents(issueId: number, options?: {
+  async listEvents(issueId: string, options?: {
     limit?: number;
   }): Promise<PaginatedResponse<Event>> {
     const params = new URLSearchParams();
-    params.set('issue', issueId.toString());
+    params.set('issue', issueId);
 
     if (options?.limit) {
       params.set('limit', options.limit.toString());

@@ -42,44 +42,79 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+// Helper to derive status from issue flags
+function getIssueStatus(issue: Issue): string {
+  if (issue.is_resolved) return 'resolved';
+  if (issue.is_muted) return 'muted';
+  return 'unresolved';
+}
+
 // Helper to format issue for display
 function formatIssue(issue: Issue): string {
   return [
-    `Issue #${issue.id}: ${issue.title}`,
-    `  Status: ${issue.status}`,
-    `  Level: ${issue.level}`,
-    `  Count: ${issue.count}`,
+    `[${issue.calculated_type}] ${issue.calculated_value}`,
+    `  ID: ${issue.id}`,
+    `  Status: ${getIssueStatus(issue)}`,
+    `  Occurrences: ${issue.digested_event_count}`,
     `  First seen: ${issue.first_seen}`,
     `  Last seen: ${issue.last_seen}`,
-    issue.culprit ? `  Culprit: ${issue.culprit}` : null,
+    issue.transaction ? `  Transaction: ${issue.transaction}` : null,
   ].filter(Boolean).join('\n');
 }
 
 // Helper to format event for display
-function formatEvent(event: Event): string {
+function formatEvent(event: Event, includeStacktrace = false): string {
   const lines = [
     `Event ${event.id}`,
+    `  Event ID: ${event.event_id}`,
     `  Timestamp: ${event.timestamp}`,
-    `  Level: ${event.level}`,
-    `  Platform: ${event.platform}`,
-    `  Message: ${event.message}`,
+    `  Ingested: ${event.ingested_at}`,
   ];
 
-  if (event.exception?.values) {
-    lines.push('  Exception:');
-    for (const exc of event.exception.values) {
-      lines.push(`    ${exc.type}: ${exc.value}`);
-      if (exc.stacktrace?.frames) {
-        lines.push('    Stacktrace:');
-        // Show most recent frames first (reverse order)
-        const frames = [...exc.stacktrace.frames].reverse().slice(0, 10);
-        for (const frame of frames) {
-          lines.push(`      ${frame.filename}:${frame.lineno} in ${frame.function}`);
-          if (frame.context_line) {
-            lines.push(`        > ${frame.context_line.trim()}`);
+  // If we have detailed event data
+  if (event.data) {
+    const data = event.data;
+
+    if (data.level) {
+      lines.push(`  Level: ${data.level}`);
+    }
+    if (data.platform) {
+      lines.push(`  Platform: ${data.platform}`);
+    }
+    if (data.message) {
+      lines.push(`  Message: ${data.message}`);
+    }
+
+    if (data.exception?.values) {
+      lines.push('  Exception:');
+      for (const exc of data.exception.values) {
+        lines.push(`    ${exc.type}: ${exc.value}`);
+        if (includeStacktrace && exc.stacktrace?.frames) {
+          lines.push('    Stacktrace (most recent first):');
+          // Show most recent frames first (reverse order)
+          const frames = [...exc.stacktrace.frames].reverse().slice(0, 15);
+          for (const frame of frames) {
+            const loc = frame.lineno ? `:${frame.lineno}` : '';
+            const col = frame.colno ? `:${frame.colno}` : '';
+            lines.push(`      ${frame.filename}${loc}${col} in ${frame.function}`);
+            if (frame.context_line) {
+              lines.push(`        > ${frame.context_line.trim()}`);
+            }
           }
         }
       }
+    }
+
+    if (data.request?.url) {
+      lines.push(`  Request: ${data.request.method || 'GET'} ${data.request.url}`);
+    }
+
+    if (data.browser?.name) {
+      lines.push(`  Browser: ${data.browser.name} ${data.browser.version || ''}`);
+    }
+
+    if (data.os?.name) {
+      lines.push(`  OS: ${data.os.name} ${data.os.version || ''}`);
     }
   }
 
@@ -169,17 +204,12 @@ server.tool(
   "get_issue",
   "Get detailed information about a specific issue",
   {
-    issue_id: z.number().describe("The issue ID to retrieve"),
+    issue_id: z.string().describe("The issue ID (UUID) to retrieve"),
   },
   async ({ issue_id }) => {
     const issue = await client.getIssue(issue_id);
 
-    const text = [
-      formatIssue(issue),
-      '',
-      'Metadata:',
-      JSON.stringify(issue.metadata ?? {}, null, 2),
-    ].join('\n');
+    const text = formatIssue(issue);
 
     return {
       content: [{ type: "text", text }],
@@ -190,9 +220,9 @@ server.tool(
 // List Events
 server.tool(
   "list_events",
-  "List events (individual error occurrences) for a specific issue",
+  "List events (individual error occurrences) for a specific issue. Returns basic event info.",
   {
-    issue_id: z.number().describe("The issue ID to list events for"),
+    issue_id: z.string().describe("The issue ID (UUID) to list events for"),
     limit: z.number().optional().default(10).describe("Maximum number of events to return (default: 10)"),
   },
   async ({ issue_id, limit }) => {
@@ -204,7 +234,7 @@ server.tool(
       };
     }
 
-    const text = response.results.map(formatEvent).join('\n\n---\n\n');
+    const text = response.results.map(e => formatEvent(e, false)).join('\n\n---\n\n');
 
     return {
       content: [{ type: "text", text: `Found ${response.results.length} event(s):\n\n${text}` }],
@@ -215,25 +245,29 @@ server.tool(
 // Get Event Details
 server.tool(
   "get_event",
-  "Get detailed information about a specific event, including full stacktrace",
+  "Get detailed information about a specific event, including full stacktrace and context",
   {
-    event_id: z.string().describe("The event ID to retrieve"),
+    event_id: z.string().describe("The event ID (UUID) to retrieve"),
   },
   async ({ event_id }) => {
     const event = await client.getEvent(event_id);
 
-    const text = [
-      formatEvent(event),
-      '',
-      'Tags:',
-      JSON.stringify(event.tags ?? {}, null, 2),
-      '',
-      'Contexts:',
-      JSON.stringify(event.contexts ?? {}, null, 2),
-    ].join('\n');
+    const lines = [formatEvent(event, true)];
+
+    if (event.data?.tags && Object.keys(event.data.tags).length > 0) {
+      lines.push('');
+      lines.push('Tags:');
+      lines.push(JSON.stringify(event.data.tags, null, 2));
+    }
+
+    if (event.data?.contexts && Object.keys(event.data.contexts).length > 0) {
+      lines.push('');
+      lines.push('Contexts:');
+      lines.push(JSON.stringify(event.data.contexts, null, 2));
+    }
 
     return {
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text: lines.join('\n') }],
     };
   }
 );
