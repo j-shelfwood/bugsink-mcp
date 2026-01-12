@@ -31,7 +31,7 @@ npm install -g bugsink-mcp
 ### From Source
 
 ```bash
-git clone https://github.com/shelfwood/bugsink-mcp.git
+git clone https://github.com/j-shelfwood/bugsink-mcp.git
 cd bugsink-mcp
 npm install
 npm run build
@@ -184,4 +184,4 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/shelfwood/bugsink-mcp).
+Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/j-shelfwood/bugsink-mcp).
