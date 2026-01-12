@@ -107,6 +107,52 @@ export interface Event {
   digest_order: number;
   grouping: number;
   data?: EventData;
+  stacktrace_md?: string;
+}
+
+export interface Release {
+  id: string;
+  project: number;
+  version: string;
+  date_released: string;
+  semver?: string;
+  is_semver?: boolean;
+  sort_epoch?: number;
+}
+
+export interface CreateProjectInput {
+  team: string;
+  name: string;
+  visibility?: 'joinable' | 'discoverable' | 'team_members';
+  alert_on_new_issue?: boolean;
+  alert_on_regression?: boolean;
+  alert_on_unmute?: boolean;
+  retention_max_event_count?: number;
+}
+
+export interface UpdateProjectInput {
+  name?: string;
+  visibility?: 'joinable' | 'discoverable' | 'team_members';
+  alert_on_new_issue?: boolean;
+  alert_on_regression?: boolean;
+  alert_on_unmute?: boolean;
+  retention_max_event_count?: number;
+}
+
+export interface CreateTeamInput {
+  name: string;
+  visibility?: 'joinable' | 'discoverable' | 'hidden';
+}
+
+export interface UpdateTeamInput {
+  name?: string;
+  visibility?: 'joinable' | 'discoverable' | 'hidden';
+}
+
+export interface CreateReleaseInput {
+  project: number;
+  version: string;
+  timestamp?: string;
 }
 
 export class BugsinkClient {
@@ -165,6 +211,8 @@ export class BugsinkClient {
   async listIssues(projectId: number, options?: {
     status?: string;
     limit?: number;
+    sort?: 'digest_order' | 'last_seen';
+    order?: 'asc' | 'desc';
   }): Promise<PaginatedResponse<Issue>> {
     const params = new URLSearchParams();
     params.set('project', projectId.toString());
@@ -174,6 +222,12 @@ export class BugsinkClient {
     }
     if (options?.limit) {
       params.set('limit', options.limit.toString());
+    }
+    if (options?.sort) {
+      params.set('sort', options.sort);
+    }
+    if (options?.order) {
+      params.set('order', options.order);
     }
 
     return this.fetch<PaginatedResponse<Issue>>(`/issues/?${params.toString()}`);
@@ -225,5 +279,108 @@ export class BugsinkClient {
         message: error instanceof Error ? error.message : 'Unknown error',
       };
     }
+  }
+
+  // ============================================================================
+  // Mutation Methods
+  // ============================================================================
+
+  /**
+   * Create a new project
+   */
+  async createProject(input: CreateProjectInput): Promise<Project> {
+    return this.fetch<Project>('/projects/', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Update an existing project
+   */
+  async updateProject(projectId: number, input: UpdateProjectInput): Promise<Project> {
+    return this.fetch<Project>(`/projects/${projectId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Get a specific team by ID
+   */
+  async getTeam(teamId: string): Promise<Team> {
+    return this.fetch<Team>(`/teams/${teamId}/`);
+  }
+
+  /**
+   * Create a new team
+   */
+  async createTeam(input: CreateTeamInput): Promise<Team> {
+    return this.fetch<Team>('/teams/', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Update an existing team
+   */
+  async updateTeam(teamId: string, input: UpdateTeamInput): Promise<Team> {
+    return this.fetch<Team>(`/teams/${teamId}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  }
+
+  // ============================================================================
+  // Stacktrace Methods
+  // ============================================================================
+
+  /**
+   * Get event stacktrace as pre-rendered Markdown
+   */
+  async getEventStacktrace(eventId: string): Promise<string> {
+    const url = `${this.baseUrl}/api/canonical/0/events/${eventId}/stacktrace/`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${this.apiToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Bugsink API error (${response.status}): ${errorText}`);
+    }
+
+    return response.text();
+  }
+
+  // ============================================================================
+  // Release Methods
+  // ============================================================================
+
+  /**
+   * List releases for a project
+   */
+  async listReleases(projectId: number): Promise<PaginatedResponse<Release>> {
+    return this.fetch<PaginatedResponse<Release>>(`/releases/?project=${projectId}`);
+  }
+
+  /**
+   * Get a specific release by ID
+   */
+  async getRelease(releaseId: string): Promise<Release> {
+    return this.fetch<Release>(`/releases/${releaseId}/`);
+  }
+
+  /**
+   * Create a new release
+   */
+  async createRelease(input: CreateReleaseInput): Promise<Release> {
+    return this.fetch<Release>('/releases/', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 }
