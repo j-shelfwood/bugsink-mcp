@@ -62,11 +62,16 @@ function formatIssue(issue: Issue): string {
   ].filter(Boolean).join('\n');
 }
 
-// Helper to format event for display
+// Helper to format event for display.
+//
+// Note on IDs: Bugsink's event schema has two UUIDs — `id` (the Bugsink-
+// internal primary key, used by `get_event` and `get_stacktrace`) and
+// `event_id` (the SDK-side origin ID, not accepted by any API endpoint).
+// We surface only `id` here, labelled clearly, to keep callers from
+// accidentally feeding the SDK origin ID back into tool calls.
 function formatEvent(event: Event, includeStacktrace = false): string {
   const lines = [
-    `Event ${event.id}`,
-    `  Event ID: ${event.event_id}`,
+    `Event ID: ${event.id}`,
     `  Timestamp: ${event.timestamp}`,
     `  Ingested: ${event.ingested_at}`,
   ];
@@ -121,6 +126,31 @@ function formatEvent(event: Event, includeStacktrace = false): string {
   return lines.join('\n');
 }
 
+// Extract the opaque `cursor` value from a Bugsink-returned next/previous URL.
+// The API returns absolute URLs like "http://.../?cursor=cD00ODY%3D"; we surface
+// just the token so the LLM can pass it back via the `cursor` argument.
+function extractCursor(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).searchParams.get('cursor');
+  } catch {
+    return null;
+  }
+}
+
+// Returns a leading "\nNext cursor: …\nPrevious cursor: …" block intended to be
+// appended to the "Found N x(s):" header line, so cursors appear above the
+// results rather than buried beneath a long list.
+function formatPagination(response: { next: string | null; previous: string | null }): string {
+  const next = extractCursor(response.next);
+  const prev = extractCursor(response.previous);
+  if (!next && !prev) return '';
+  const lines: string[] = [];
+  if (next) lines.push(`Next cursor: ${next}`);
+  if (prev) lines.push(`Previous cursor: ${prev}`);
+  return '\n' + lines.join('\n');
+}
+
 // ============================================================================
 // Tool Definitions
 // ============================================================================
@@ -129,9 +159,11 @@ function formatEvent(event: Event, includeStacktrace = false): string {
 server.tool(
   "list_projects",
   "List all projects in the Bugsink instance",
-  {},
-  async () => {
-    const response = await client.listProjects();
+  {
+    cursor: z.string().optional().describe("Pagination cursor from a previous response's 'Next cursor' or 'Previous cursor'"),
+  },
+  async ({ cursor }) => {
+    const response = await client.listProjects({ cursor });
 
     if (response.results.length === 0) {
       return {
@@ -144,7 +176,7 @@ server.tool(
     ).join('\n');
 
     return {
-      content: [{ type: "text", text: `Found ${response.results.length} project(s):\n\n${text}` }],
+      content: [{ type: "text", text: `Found ${response.results.length} project(s):${formatPagination(response)}\n\n${text}` }],
     };
   }
 );
@@ -153,9 +185,11 @@ server.tool(
 server.tool(
   "list_teams",
   "List all teams in the Bugsink instance",
-  {},
-  async () => {
-    const response = await client.listTeams();
+  {
+    cursor: z.string().optional().describe("Pagination cursor from a previous response's 'Next cursor' or 'Previous cursor'"),
+  },
+  async ({ cursor }) => {
+    const response = await client.listTeams({ cursor });
 
     if (response.results.length === 0) {
       return {
@@ -168,7 +202,7 @@ server.tool(
     ).join('\n');
 
     return {
-      content: [{ type: "text", text: `Found ${response.results.length} team(s):\n\n${text}` }],
+      content: [{ type: "text", text: `Found ${response.results.length} team(s):${formatPagination(response)}\n\n${text}` }],
     };
   }
 );
@@ -183,9 +217,10 @@ server.tool(
     limit: z.number().optional().default(25).describe("Maximum number of issues to return (default: 25)"),
     sort: z.enum(['digest_order', 'last_seen']).optional().describe("Sort mode: 'digest_order' or 'last_seen' (default: digest_order)"),
     order: z.enum(['asc', 'desc']).optional().describe("Sort order: 'asc' or 'desc' (default: desc)"),
+    cursor: z.string().optional().describe("Pagination cursor from a previous response's 'Next cursor' or 'Previous cursor'"),
   },
-  async ({ project_id, status, limit, sort, order }) => {
-    const response = await client.listIssues(project_id, { status, limit, sort, order });
+  async ({ project_id, status, limit, sort, order, cursor }) => {
+    const response = await client.listIssues(project_id, { status, limit, sort, order, cursor });
 
     if (response.results.length === 0) {
       return {
@@ -196,7 +231,7 @@ server.tool(
     const text = response.results.map(formatIssue).join('\n\n');
 
     return {
-      content: [{ type: "text", text: `Found ${response.results.length} issue(s):\n\n${text}` }],
+      content: [{ type: "text", text: `Found ${response.results.length} issue(s):${formatPagination(response)}\n\n${text}` }],
     };
   }
 );
@@ -219,6 +254,56 @@ server.tool(
   }
 );
 
+// Analyze Issue Context (Smart Context)
+server.tool(
+  "analyze_issue_context",
+  "Holistic analysis tool: retrieves issue details, recent events, and full stacktrace in one call.",
+  {
+    issue_id: z.string().describe("The issue ID (UUID) to analyze"),
+  },
+  async ({ issue_id }) => {
+    const [issue, events] = await Promise.all([
+      client.getIssue(issue_id),
+      client.listEvents(issue_id, { limit: 5 }),
+    ]);
+
+    let output = `# Issue Analysis: ${issue.calculated_type}: ${issue.calculated_value}\n\n`;
+    output += `## Issue Details\n${formatIssue(issue)}\n\n`;
+    output += `## Recent Events (${events.results.length})\n`;
+
+    if (events.results.length === 0) {
+      output += "\nNo events found for this issue.";
+    } else {
+      // Fetch markdown stacktrace for the most recent event.
+      // Note: the API expects the Bugsink-internal `id`, NOT the SDK-side
+      // `event_id` (which is the origin identifier and isn't routable).
+      const latestEvent = events.results[0];
+      let stacktraceMd: string | null = null;
+      try {
+        stacktraceMd = await client.getEventStacktrace(latestEvent.id);
+      } catch {
+        // Stacktrace unavailable; formatted frames from get_event still shown below
+      }
+
+      output += `\n### Latest Event\n${formatEvent(latestEvent, true)}`;
+      if (stacktraceMd) {
+        output += `\n\nMarkdown Stacktrace:\n${stacktraceMd}`;
+      }
+
+      if (events.results.length > 1) {
+        output += `\n\n### Other Recent Events\n`;
+        for (const e of events.results.slice(1)) {
+          output += `\n---\n${formatEvent(e, false)}\n`;
+        }
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: output }],
+    };
+  }
+);
+
 // List Events
 server.tool(
   "list_events",
@@ -226,9 +311,10 @@ server.tool(
   {
     issue_id: z.string().describe("The issue ID (UUID) to list events for"),
     limit: z.number().optional().default(10).describe("Maximum number of events to return (default: 10)"),
+    cursor: z.string().optional().describe("Pagination cursor from a previous response's 'Next cursor' or 'Previous cursor'"),
   },
-  async ({ issue_id, limit }) => {
-    const response = await client.listEvents(issue_id, { limit });
+  async ({ issue_id, limit, cursor }) => {
+    const response = await client.listEvents(issue_id, { limit, cursor });
 
     if (response.results.length === 0) {
       return {
@@ -239,7 +325,7 @@ server.tool(
     const text = response.results.map(e => formatEvent(e, false)).join('\n\n---\n\n');
 
     return {
-      content: [{ type: "text", text: `Found ${response.results.length} event(s):\n\n${text}` }],
+      content: [{ type: "text", text: `Found ${response.results.length} event(s):${formatPagination(response)}\n\n${text}` }],
     };
   }
 );
@@ -441,9 +527,9 @@ server.tool(
 // Get Event Stacktrace (Markdown)
 server.tool(
   "get_stacktrace",
-  "Get an event's stacktrace as pre-rendered Markdown. More readable than raw frame data.",
+  "Get an event's stacktrace as Markdown. Uses the Bugsink-internal event ID (the `id` field from list_events, not `event_id`).",
   {
-    event_id: z.string().describe("The event ID (UUID) to get stacktrace for"),
+    event_id: z.string().describe("The event ID (UUID) to get stacktrace for — use the `id` field from list_events"),
   },
   async ({ event_id }) => {
     const markdown = await client.getEventStacktrace(event_id);
@@ -464,9 +550,10 @@ server.tool(
   "List releases for a project. Releases help track which version introduced or fixed issues.",
   {
     project_id: z.number().describe("The project ID to list releases for"),
+    cursor: z.string().optional().describe("Pagination cursor from a previous response's 'Next cursor' or 'Previous cursor'"),
   },
-  async ({ project_id }) => {
-    const response = await client.listReleases(project_id);
+  async ({ project_id, cursor }) => {
+    const response = await client.listReleases(project_id, { cursor });
 
     if (response.results.length === 0) {
       return {
@@ -479,7 +566,7 @@ server.tool(
     ).join('\n');
 
     return {
-      content: [{ type: "text", text: `Found ${response.results.length} release(s):\n\n${text}` }],
+      content: [{ type: "text", text: `Found ${response.results.length} release(s):${formatPagination(response)}\n\n${text}` }],
     };
   }
 );
