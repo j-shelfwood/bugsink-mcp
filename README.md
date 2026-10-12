@@ -10,6 +10,7 @@ This server enables AI assistants like Claude, Cursor, and other MCP-compatible 
 - **List Teams** - View all teams
 - **List Issues** - Query grouped error occurrences by project
 - **Get Issue Details** - Retrieve detailed issue information
+- **Triage Issues** - Resolve, reopen, mute and unmute issues
 - **List Events** - View individual error occurrences with stacktraces
 - **Get Event Details** - Full event data including tags and contexts
 - **Test Connection** - Verify API connectivity
@@ -146,6 +147,31 @@ Get detailed event information including full stacktrace.
 
 **Parameters:**
 - `event_id` (string, required): The event ID
+
+### `resolve_issue`
+Mark an issue as resolved. Requires a token with the `issues:triage` permission.
+
+**Parameters:**
+- `issue_id` (string, required): The issue ID
+- `resolved_in` (string, optional): 'now' (default), 'next_release' or 'latest_release'
+
+### `reopen_issue`
+Mark a resolved issue as unresolved again.
+
+**Parameters:**
+- `issue_id` (string, required): The issue ID
+
+### `mute_issue`
+Mute an unresolved issue.
+
+**Parameters:**
+- `issue_id` (string, required): The issue ID
+
+### `unmute_issue`
+Unmute a muted issue.
+
+**Parameters:**
+- `issue_id` (string, required): The issue ID
 
 ## Example Usage
 

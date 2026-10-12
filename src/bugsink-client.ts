@@ -155,6 +155,14 @@ export interface CreateReleaseInput {
   timestamp?: string;
 }
 
+export type IssueAction =
+  | 'resolve'
+  | 'resolve-next'
+  | 'resolve-latest'
+  | 'reopen'
+  | 'mute'
+  | 'unmute';
+
 export class BugsinkClient {
   private baseUrl: string;
   private apiToken: string;
@@ -329,6 +337,19 @@ export class BugsinkClient {
     return this.fetch<Team>(`/teams/${teamId}/`, {
       method: 'PATCH',
       body: JSON.stringify(input),
+    });
+  }
+
+  // ============================================================================
+  // Issue Triage Methods
+  // ============================================================================
+
+  /**
+   * Apply a triage action to an issue (requires a token with `issues:triage`)
+   */
+  async applyIssueAction(issueId: string, action: IssueAction): Promise<Issue> {
+    return this.fetch<Issue>(`/issues/${issueId}/${action}/`, {
+      method: 'POST',
     });
   }
 

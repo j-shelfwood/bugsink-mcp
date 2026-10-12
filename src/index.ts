@@ -435,6 +435,81 @@ server.tool(
 );
 
 // ============================================================================
+// Issue Triage Tools
+// ============================================================================
+
+// Resolve Issue
+server.tool(
+  "resolve_issue",
+  "Mark an issue as resolved, either immediately or tied to a release",
+  {
+    issue_id: z.string().describe("The issue ID (UUID) to resolve"),
+    resolved_in: z.enum(['now', 'next_release', 'latest_release']).optional().default('now').describe("When the fix lands: 'now' (default), 'next_release' or 'latest_release'"),
+  },
+  async ({ issue_id, resolved_in }) => {
+    const action = resolved_in === 'next_release'
+      ? 'resolve-next'
+      : resolved_in === 'latest_release'
+        ? 'resolve-latest'
+        : 'resolve';
+
+    const issue = await client.applyIssueAction(issue_id, action);
+
+    return {
+      content: [{ type: "text", text: `Issue resolved successfully:\n\n${formatIssue(issue)}` }],
+    };
+  }
+);
+
+// Reopen Issue
+server.tool(
+  "reopen_issue",
+  "Mark a resolved issue as unresolved again",
+  {
+    issue_id: z.string().describe("The issue ID (UUID) to reopen"),
+  },
+  async ({ issue_id }) => {
+    const issue = await client.applyIssueAction(issue_id, 'reopen');
+
+    return {
+      content: [{ type: "text", text: `Issue reopened successfully:\n\n${formatIssue(issue)}` }],
+    };
+  }
+);
+
+// Mute Issue
+server.tool(
+  "mute_issue",
+  "Mute an unresolved issue so it stops alerting",
+  {
+    issue_id: z.string().describe("The issue ID (UUID) to mute"),
+  },
+  async ({ issue_id }) => {
+    const issue = await client.applyIssueAction(issue_id, 'mute');
+
+    return {
+      content: [{ type: "text", text: `Issue muted successfully:\n\n${formatIssue(issue)}` }],
+    };
+  }
+);
+
+// Unmute Issue
+server.tool(
+  "unmute_issue",
+  "Unmute a muted issue",
+  {
+    issue_id: z.string().describe("The issue ID (UUID) to unmute"),
+  },
+  async ({ issue_id }) => {
+    const issue = await client.applyIssueAction(issue_id, 'unmute');
+
+    return {
+      content: [{ type: "text", text: `Issue unmuted successfully:\n\n${formatIssue(issue)}` }],
+    };
+  }
+);
+
+// ============================================================================
 // Stacktrace Tools
 // ============================================================================
 
